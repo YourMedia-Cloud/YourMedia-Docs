@@ -6,21 +6,28 @@ on:
     types: [opened, review_requested, closed]
 
 jobs:
-  move-issue-to-project:
+  # Gestion des issues - Projet principal
+  process-issues:
     if: github.event_name == 'issues'
     runs-on: ubuntu-latest
+    outputs:
+      has-labels: ${{ steps.check-labels.outputs.has_labels }}
     steps:
-      - name: Move issue to project
+      - name: Check if issue has labels
+        id: check-labels
+        run: |
+          if [ "${{ join(github.event.issue.labels.*.name, ' ') }}" != "" ]; then
+            echo "has_labels=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_labels=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Move issue to main project
         uses: actions/add-to-project@v0.5.0
         with:
           project-url: "https://github.com/orgs/YourMedia-Cloud/projects/1"
           github-token: ${{ secrets.GH_PROJECT_TOKEN }}
-          labeled: "ci-cd"
-
-  update-issue-status:
-    needs: move-issue-to-project
-    runs-on: ubuntu-latest
-    steps:
+      
       - name: Update Issue Status to "To Do"
         uses: actions/update-project-fields@v1
         with:
@@ -29,23 +36,95 @@ jobs:
           field-name: "Status"
           field-value: "To Do"
 
-  move-issue-to-repo:
+  # Gestion des issues spécifiques à l'infrastructure
+  process-infra-issues:
+    needs: process-issues
+    if: github.event_name == 'issues' && contains(github.event.issue.labels.*.name, 'infra')
     runs-on: ubuntu-latest
-    if: github.event_name == 'issues'
     steps:
-      - name: Move Issue to the correct repo
+      - name: Move issue to Infrastructure project
+        uses: actions/add-to-project@v0.5.0
+        with:
+          project-url: "https://github.com/orgs/YourMedia-Cloud/projects/2"
+          github-token: ${{ secrets.GH_PROJECT_TOKEN }}
+      
+      - name: Update Infrastructure Issue Status
+        uses: actions/update-project-fields@v1
+        with:
+          project-url: "https://github.com/orgs/YourMedia-Cloud/projects/2"
+          github-token: ${{ secrets.GH_PROJECT_TOKEN }}
+          field-name: "Status"
+          field-value: "To Do"
+
+  # Transfert des issues vers le bon dépôt en fonction du label
+  transfer-issue:
+    needs: process-issues
+    if: github.event_name == 'issues' && needs.process-issues.outputs.has-labels == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine Target Repo
+        id: repo
+        run: |
+          LABELS="${{ join(github.event.issue.labels.*.name, ' ') }}"
+          
+          if [[ $LABELS == *"infra"* ]]; then
+            echo "repo=YourMedia-Infrastructure" >> $GITHUB_ENV
+          elif [[ $LABELS == *"api"* ]]; then
+            echo "repo=YourMedia-API" >> $GITHUB_ENV
+          elif [[ $LABELS == *"mobile"* ]]; then
+            echo "repo=YourMedia-Mobile" >> $GITHUB_ENV
+          elif [[ $LABELS == *"monitoring"* ]]; then
+            echo "repo=YourMedia-Monitoring" >> $GITHUB_ENV
+          elif [[ $LABELS == *"cicd"* ]]; then
+            echo "repo=YourMedia-CICD" >> $GITHUB_ENV
+          else
+            echo "repo=YourMedia-Docs" >> $GITHUB_ENV
+          fi
+      
+      - name: Transfer Issue to correct repo
         uses: actions-cool/issues-helper@v3
         with:
           actions: transfer
           token: ${{ secrets.GH_PROJECT_TOKEN }}
           issue-number: ${{ github.event.issue.number }}
           owner: "YourMedia-Cloud"
-          # L'erreur était ici, dans les expressions conditionnelles
-          repo: >-
-            ${{
-            github.event.issue.labels[0].name == 'infra' && 'YourMedia-Infrastructure' ||
-            github.event.issue.labels[0].name == 'api' && 'YourMedia-API' ||
-            github.event.issue.labels[0].name == 'aws' && 'YourMedia-AWS' ||
-            github.event.issue.labels[0].name == 'monitoring' && 'YourMedia-Monitoring' ||
-            'YourMedia-Docs'
-            }}
+          repo: ${{ env.repo }}
+
+  # Gestion des pull requests
+  process-pull-requests:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Move PR to project and update status
+        uses: actions/add-to-project@v0.5.0
+        with:
+          project-url: "https://github.com/orgs/YourMedia-Cloud/projects/1"
+          github-token: ${{ secrets.GH_PROJECT_TOKEN }}
+      
+      - name: Update PR Status based on event
+        uses: actions/update-project-fields@v1
+        with:
+          project-url: "https://github.com/orgs/YourMedia-Cloud/projects/1"
+          github-token: ${{ secrets.GH_PROJECT_TOKEN }}
+          field-name: "Status"
+          field-value: ${{ github.event.action == 'opened' && 'In Progress' || github.event.action == 'review_requested' && 'Review' || (github.event.action == 'closed' && github.event.pull_request.merged == true) && 'Done' || 'To Do' }}
+      
+      - name: Extract issue number
+        if: github.event.action == 'closed' && github.event.pull_request.merged == true
+        id: extract-issue
+        run: |
+          BODY="${{ github.event.pull_request.body }}"
+          if [[ $BODY =~ Closes\ #([0-9]+) ]]; then
+            echo "issue_number=${BASH_REMATCH[1]}" >> $GITHUB_OUTPUT
+          else
+            echo "issue_number=" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Update linked issue when PR is merged
+        if: github.event.action == 'closed' && github.event.pull_request.merged == true
+        id: close-issue
+        uses: actions-cool/issues-helper@v3
+        with:
+          actions: close-issues
+          token: ${{ secrets.GH_PROJECT_TOKEN }}
+          issues-number: "${{ steps.extract-issue.outputs.issue_number }}"
