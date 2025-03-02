@@ -1,4 +1,5 @@
 name: Auto Move Issues & PRs in Project Board
+
 on:
   issues:
     types: [opened, labeled]
@@ -8,38 +9,19 @@ on:
 jobs:
   # Gestion des issues - Projet principal
   process-issues:
-    if: github.event_name == 'issues'
     runs-on: ubuntu-latest
-    outputs:
-      has-labels: ${{ steps.check-labels.outputs.has_labels }}
+    if: github.event_name == 'issues'
     steps:
-      - name: Check if issue has labels
-        id: check-labels
-        run: |
-          if [ "${{ join(github.event.issue.labels.*.name, ' ') }}" != "" ]; then
-            echo "has_labels=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_labels=false" >> $GITHUB_OUTPUT
-          fi
-      
       - name: Move issue to main project
         uses: actions/add-to-project@v0.5.0
         with:
           project-url: "https://github.com/orgs/YourMedia-Cloud/projects/1"
           github-token: ${{ secrets.GH_PROJECT_TOKEN }}
-      
-      - name: Update Issue Status to "To Do"
-        uses: actions/update-project-fields@v1
-        with:
-          project-url: "https://github.com/orgs/YourMedia-Cloud/projects/1"
-          github-token: ${{ secrets.GH_PROJECT_TOKEN }}
-          field-name: "Status"
-          field-value: "To Do"
 
   # Gestion des issues spécifiques à l'infrastructure
   process-infra-issues:
     needs: process-issues
-    if: github.event_name == 'issues' && contains(github.event.issue.labels.*.name, 'infra')
+    if: contains(join(github.event.issue.labels.*.name, ' '), 'infra')
     runs-on: ubuntu-latest
     steps:
       - name: Move issue to Infrastructure project
@@ -47,26 +29,17 @@ jobs:
         with:
           project-url: "https://github.com/orgs/YourMedia-Cloud/projects/2"
           github-token: ${{ secrets.GH_PROJECT_TOKEN }}
-      
-      - name: Update Infrastructure Issue Status
-        uses: actions/update-project-fields@v1
-        with:
-          project-url: "https://github.com/orgs/YourMedia-Cloud/projects/2"
-          github-token: ${{ secrets.GH_PROJECT_TOKEN }}
-          field-name: "Status"
-          field-value: "To Do"
 
   # Transfert des issues vers le bon dépôt en fonction du label
   transfer-issue:
     needs: process-issues
-    if: github.event_name == 'issues' && needs.process-issues.outputs.has-labels == 'true'
+    if: github.event_name == 'issues'
     runs-on: ubuntu-latest
     steps:
       - name: Determine Target Repo
         id: repo
         run: |
           LABELS="${{ join(github.event.issue.labels.*.name, ' ') }}"
-          
           if [[ $LABELS == *"infra"* ]]; then
             echo "repo=YourMedia-Infrastructure" >> $GITHUB_ENV
           elif [[ $LABELS == *"api"* ]]; then
@@ -75,12 +48,12 @@ jobs:
             echo "repo=YourMedia-Mobile" >> $GITHUB_ENV
           elif [[ $LABELS == *"monitoring"* ]]; then
             echo "repo=YourMedia-Monitoring" >> $GITHUB_ENV
-          elif [[ $LABELS == *"cicd"* ]]; then
+          elif [[ $LABELS == *"ci-cd"* ]]; then
             echo "repo=YourMedia-CICD" >> $GITHUB_ENV
           else
             echo "repo=YourMedia-Docs" >> $GITHUB_ENV
           fi
-      
+
       - name: Transfer Issue to correct repo
         uses: actions-cool/issues-helper@v3
         with:
@@ -95,36 +68,34 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - name: Move PR to project and update status
+      - name: Move PR to project
         uses: actions/add-to-project@v0.5.0
         with:
           project-url: "https://github.com/orgs/YourMedia-Cloud/projects/1"
           github-token: ${{ secrets.GH_PROJECT_TOKEN }}
-      
-      - name: Update PR Status based on event
-        uses: actions/update-project-fields@v1
-        with:
-          project-url: "https://github.com/orgs/YourMedia-Cloud/projects/1"
-          github-token: ${{ secrets.GH_PROJECT_TOKEN }}
-          field-name: "Status"
-          field-value: ${{ github.event.action == 'opened' && 'In Progress' || github.event.action == 'review_requested' && 'Review' || (github.event.action == 'closed' && github.event.pull_request.merged == true) && 'Done' || 'To Do' }}
-      
-      - name: Extract issue number
-        if: github.event.action == 'closed' && github.event.pull_request.merged == true
-        id: extract-issue
+
+      - name: Update PR Status via API
         run: |
-          BODY="${{ github.event.pull_request.body }}"
-          if [[ $BODY =~ Closes\ #([0-9]+) ]]; then
-            echo "issue_number=${BASH_REMATCH[1]}" >> $GITHUB_OUTPUT
-          else
-            echo "issue_number=" >> $GITHUB_OUTPUT
+          STATUS="To Do"
+          if [ "${{ github.event.action }}" == "review_requested" ]; then STATUS="Review"; fi
+          if [ "${{ github.event.pull_request.merged }}" == "true" ]; then STATUS="Done"; fi
+
+          curl -X POST -H "Authorization: Bearer ${{ secrets.GH_PROJECT_TOKEN }}" \
+          -H "Accept: application/vnd.github.v3+json" \
+          https://api.github.com/projects/columns/cards \
+          -d '{
+            "content_id": ${{ github.event.pull_request.id }},
+            "content_type": "PullRequest",
+            "column_id": 12345678
+          }'
+
+      - name: Close linked issue when PR is merged
+        if: github.event.pull_request.merged == true
+        run: |
+          ISSUE_NUMBER=$(echo "${{ github.event.pull_request.body }}" | grep -oP '(?<=Closes #)\d+')
+          if [[ ! -z "$ISSUE_NUMBER" ]]; then
+            curl -X PATCH -H "Authorization: Bearer ${{ secrets.GH_PROJECT_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_NUMBER \
+            -d '{"state": "closed"}'
           fi
-      
-      - name: Update linked issue when PR is merged
-        if: github.event.action == 'closed' && github.event.pull_request.merged == true
-        id: close-issue
-        uses: actions-cool/issues-helper@v3
-        with:
-          actions: close-issues
-          token: ${{ secrets.GH_PROJECT_TOKEN }}
-          issues-number: "${{ steps.extract-issue.outputs.issue_number }}"
