@@ -2,7 +2,7 @@ name: Auto Move Issues & PRs in Project Board
 
 on:
   issues:
-    types: [opened, edited, labeled]
+    types: [opened, labeled]
   pull_request:
     types: [opened, review_requested, closed]
 
@@ -14,29 +14,37 @@ jobs:
       - name: Move issue to project
         uses: actions/add-to-project@v1
         with:
-          project-url: "https://github.com/orgs/YourMedia-Cloud/projects/1"  # Remplace avec ton URL de projet
-          github-token: ${{ secrets.GH_PROJECT_TOKEN }}
-          labeled: "ci-cd"  # Ajoute l'issue lorsqu'elle reçoit ce label
-
-  move-pr-to-project:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Move PR to project
-        uses: actions/add-to-project@v1
-        with:
           project-url: "https://github.com/orgs/YourMedia-Cloud/projects/1"
           github-token: ${{ secrets.GH_PROJECT_TOKEN }}
-          labeled: "in-progress"  # Ajoute le PR avec ce label
+          labeled: "ci-cd"
 
-  update-pr-status:
-    if: github.event_name == 'pull_request'
+  update-issue-status:
+    needs: move-issue-to-project
     runs-on: ubuntu-latest
     steps:
-      - name: Update PR status in project
+      - name: Update Issue Status to "To Do"
         uses: actions/update-project-fields@v1
         with:
           project-url: "https://github.com/orgs/YourMedia-Cloud/projects/1"
           github-token: ${{ secrets.GH_PROJECT_TOKEN }}
           field-name: "Status"
-          field-value: ${{ github.event.action == 'review_requested' && 'Review' || github.event.pull_request.merged == true && 'Done' || 'In Progress' }}
+          field-value: "To Do"
+
+  move-issue-to-repo:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'issues'
+    steps:
+      - name: Move Issue to the correct repo
+        uses: actions-cool/issues-helper@v3
+        with:
+          actions: transfer
+          token: ${{ secrets.GH_PROJECT_TOKEN }}
+          issue-number: ${{ github.event.issue.number }}
+          owner: "YourMedia-Cloud"
+          repo: ${{ 
+            github.event.issue.labels[0].name == 'infra' && 'YourMedia-Infra' ||
+            github.event.issue.labels[0].name == 'api' && 'YourMedia-API' ||
+            github.event.issue.labels[0].name == 'aws' && 'YourMedia-AWS' ||
+            github.event.issue.labels[0].name == 'monitoring' && 'YourMedia-Monitoring' ||
+            'YourMedia-Docs'  
+          }}
