@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Move issue to project
-        uses: actions/add-to-project@v1
+        uses: actions/add-to-project@v0.5.0 
         with:
           project-url: "https://github.com/orgs/YourMedia-Cloud/projects/1"
           github-token: ${{ secrets.GH_PROJECT_TOKEN }}
