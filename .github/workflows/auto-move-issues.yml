@@ -2,51 +2,41 @@ name: Auto Move Issues & PRs in Project Board
 
 on:
   issues:
-    types: [opened, edited]
+    types: [opened, edited, labeled]
   pull_request:
     types: [opened, review_requested, closed]
 
 jobs:
-  move-issue-to-todo:
+  move-issue-to-project:
     if: github.event_name == 'issues'
     runs-on: ubuntu-latest
     steps:
-      - name: Move issue to "To Do"
-        uses: actions/add-to-project@v0.5.0
+      - name: Move issue to project
+        uses: actions/add-to-project@v1
         with:
-          project-url: https://github.com/orgs/YourMedia-Cloud/projects/1
+          project-url: "https://github.com/orgs/YourMedia-Cloud/projects/1"  # Remplace avec ton URL de projet
           github-token: ${{ secrets.GH_PROJECT_TOKEN }}
-          column-name: "To Do"
+          labeled: "ci-cd"  # Ajoute l'issue lorsqu'elle reçoit ce label
 
-  move-pr-to-in-progress:
-    if: github.event_name == 'pull_request' && github.event.action == 'opened'
+  move-pr-to-project:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - name: Move PR to "In Progress"
-        uses: actions/add-to-project@v0.5.0
+      - name: Move PR to project
+        uses: actions/add-to-project@v1
         with:
-          project-url: https://github.com/orgs/YourMedia-Cloud/projects/1
+          project-url: "https://github.com/orgs/YourMedia-Cloud/projects/1"
           github-token: ${{ secrets.GH_PROJECT_TOKEN }}
-          column-name: "In Progress"
+          labeled: "in-progress"  # Ajoute le PR avec ce label
 
-  move-pr-to-review:
-    if: github.event_name == 'pull_request' && github.event.action == 'review_requested'
+  update-pr-status:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - name: Move PR to "Review"
-        uses: actions/add-to-project@v0.5.0
+      - name: Update PR status in project
+        uses: actions/update-project-fields@v1
         with:
-          project-url: https://github.com/orgs/YourMedia-Cloud/projects/1
+          project-url: "https://github.com/orgs/YourMedia-Cloud/projects/1"
           github-token: ${{ secrets.GH_PROJECT_TOKEN }}
-          column-name: "Review"
-
-  move-pr-to-done:
-    if: github.event_name == 'pull_request' && github.event.pull_request.merged == true
-    runs-on: ubuntu-latest
-    steps:
-      - name: Move PR to "Done"
-        uses: actions/add-to-project@v0.5.0
-        with:
-          project-url: https://github.com/orgs/YourMedia-Cloud/projects/1
-          github-token: ${{ secrets.GH_PROJECT_TOKEN }}
-          column-name: "Done"
+          field-name: "Status"
+          field-value: ${{ github.event.action == 'review_requested' && 'Review' || github.event.pull_request.merged == true && 'Done' || 'In Progress' }}
