@@ -43,7 +43,7 @@ jobs:
           # L'erreur était ici, dans les expressions conditionnelles
           repo: >-
             ${{
-            github.event.issue.labels[0].name == 'infra' && 'YourMedia-Infra' ||
+            github.event.issue.labels[0].name == 'infra' && 'YourMedia-Infrastructure' ||
             github.event.issue.labels[0].name == 'api' && 'YourMedia-API' ||
             github.event.issue.labels[0].name == 'aws' && 'YourMedia-AWS' ||
             github.event.issue.labels[0].name == 'monitoring' && 'YourMedia-Monitoring' ||
