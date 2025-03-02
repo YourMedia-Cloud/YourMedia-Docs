@@ -1,5 +1,4 @@
 name: Auto Move Issues & PRs in Project Board
-
 on:
   issues:
     types: [opened, labeled]
@@ -12,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Move issue to project
-        uses: actions/add-to-project@v0.5.0 
+        uses: actions/add-to-project@v0.5.0
         with:
           project-url: "https://github.com/orgs/YourMedia-Cloud/projects/1"
           github-token: ${{ secrets.GH_PROJECT_TOKEN }}
@@ -41,10 +40,12 @@ jobs:
           token: ${{ secrets.GH_PROJECT_TOKEN }}
           issue-number: ${{ github.event.issue.number }}
           owner: "YourMedia-Cloud"
-          repo: ${{ 
+          # L'erreur était ici, dans les expressions conditionnelles
+          repo: >-
+            ${{
             github.event.issue.labels[0].name == 'infra' && 'YourMedia-Infra' ||
             github.event.issue.labels[0].name == 'api' && 'YourMedia-API' ||
             github.event.issue.labels[0].name == 'aws' && 'YourMedia-AWS' ||
             github.event.issue.labels[0].name == 'monitoring' && 'YourMedia-Monitoring' ||
-            'YourMedia-Docs'  
-          }}
+            'YourMedia-Docs'
+            }}
