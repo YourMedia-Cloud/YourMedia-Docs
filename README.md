@@ -43,6 +43,7 @@ En raison de la croissance rapide de la plateforme, nous effectuons une **migrat
 
 ### 🔎 **Accéder à une section spécifique**
 Clique simplement sur un fichier ci-dessus pour voir la documentation correspondante.
+La documentation est encore en préparation
 
 ### 🏗 **Cloner ce dépôt localement**
 ```bash
