@@ -81,20 +81,20 @@ jobs:
         id: project-config
         run: |
           CONFIG=$(jq -c . < .github/workflows/project-config.json)
-          echo "config=$CONFIG" >> $GITHUB_ENV
+          echo "CONFIG=$CONFIG" >> $GITHUB_ENV
 
       - name: Update PR Status
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GH_PROJECT_TOKEN }}
           script: |
-            const config = JSON.parse(process.env.config);
+            const config = JSON.parse(process.env.CONFIG);
             const statusName = process.env.status || 'Todo';
             const statusMapping = config.statusMapping || {};
             const statusOptions = config.statusValues || {};
             const projectStatus = statusMapping[statusName] || statusName;
             let statusOptionId = statusOptions[projectStatus] || statusOptions['Todo'];
-            console.log(`🔄 Updating PR status to: ${projectStatus}`);
+            console.log(`Updating PR status to: ${projectStatus}`);
 
             try {
               const projectQuery = `query { organization(login: "${context.repo.owner}") { projectV2(number: ${config.projectNumber}) { id } } }`;
@@ -121,7 +121,7 @@ jobs:
 
               const mutation = `mutation { updateProjectV2ItemFieldValue(input: { projectId: "${projectId}", itemId: "${itemId}", fieldId: "${config.statusField}", value: { singleSelectOptionId: "${statusOptionId}" } }) { projectV2Item { id } } }`;
               await github.graphql(mutation);
-              console.log(`✅ PR #${prNumber} status updated to ${projectStatus}`);
+              console.log(`PR #${prNumber} status updated to ${projectStatus}`);
 
             } catch (error) {
               console.error(`Error updating PR status: ${error.message}`);
@@ -144,5 +144,5 @@ jobs:
                 issue_number: issueNumber,
                 state: 'closed'
               });
-              console.log(`✅ Closed issue #${issueNumber}`);
+              console.log(`Closed issue #${issueNumber}`);
             }
