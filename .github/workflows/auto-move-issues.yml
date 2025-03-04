@@ -80,6 +80,9 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
       - name: Move PR to project
         uses: actions/add-to-project@v0.5.0
         with:
@@ -99,27 +102,31 @@ jobs:
             echo "status=Todo" >> $GITHUB_ENV
           fi
 
+      - name: Read project configuration
+        id: project-config
+        run: |
+          CONFIG=$(cat .github/project-config.json)
+          echo "config=$CONFIG" >> $GITHUB_OUTPUT
+
       - name: Update PR Status
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GH_PROJECT_TOKEN }}
           script: |
-            // Configuration pour le projet et ses champs de statut
-            const projectNumber = 1;
-            const statusFieldId = 'PVTSSF_lADOC_7Lj84AzUaFzgpIZ2k';
-            const statusOptions = {
-              'Todo': 'f75ad846',
-              'In Progress': '47fc9ee4',
-              'Review': '9bfffa30',
-              'Done': '98236657'
-            };
+            // Charger la configuration du projet
+            const config = JSON.parse('${{ steps.project-config.outputs.config }}');
 
             // Obtenir le statut à appliquer
             const statusName = process.env.status || 'Todo';
-            const statusOptionId = statusOptions[statusName];
+            const statusMapping = config.statusMapping || {};
+            const statusOptions = config.statusValues || {};
+
+            // Convertir le statut du workflow au format du projet
+            const projectStatus = statusMapping[statusName] || statusName;
+            const statusOptionId = statusOptions[projectStatus];
 
             if (!statusOptionId) {
-              console.log(`Status ${statusName} not found in options. Using default Todo status.`);
+              console.log(`Status ${projectStatus} not found in options. Using default Todo status.`);
               statusOptionId = statusOptions['Todo'];
             }
 
@@ -127,7 +134,7 @@ jobs:
               // Récupérer l'ID du projet
               const projectQuery = `query {
                 organization(login: "${context.repo.owner}") {
-                  projectV2(number: ${projectNumber}) {
+                  projectV2(number: ${config.projectNumber}) {
                     id
                   }
                 }
@@ -139,7 +146,7 @@ jobs:
               // Trouver l'élément de projet correspondant à cette PR
               const itemQuery = `query {
                 organization(login: "${context.repo.owner}") {
-                  projectV2(number: ${projectNumber}) {
+                  projectV2(number: ${config.projectNumber}) {
                     items(first: 100) {
                       nodes {
                         id
@@ -177,7 +184,7 @@ jobs:
                   input: {
                     projectId: "${projectId}",
                     itemId: "${itemId}",
-                    fieldId: "${statusFieldId}",
+                    fieldId: "${config.statusField}",
                     value: { 
                       singleSelectOptionId: "${statusOptionId}"
                     }
@@ -190,7 +197,7 @@ jobs:
               }`;
               
               await github.graphql(mutation);
-              console.log(`Successfully updated PR #${prNumber} status to ${statusName}`);
+              console.log(`Successfully updated PR #${prNumber} status to ${projectStatus}`);
               
             } catch (error) {
               console.error(`Error updating PR status: ${error.message}`);
