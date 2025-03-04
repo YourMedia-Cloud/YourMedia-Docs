@@ -93,8 +93,10 @@ jobs:
             echo "status=Review" >> $GITHUB_ENV
           elif [ "${{ github.event.action }}" == "closed" ] && [ "${{ github.event.pull_request.merged }}" == "true" ]; then
             echo "status=Done" >> $GITHUB_ENV
+          elif [ "${{ github.event.action }}" == "opened" ]; then
+            echo "status=In Progress" >> $GITHUB_ENV
           else
-            echo "status=To Do" >> $GITHUB_ENV
+            echo "status=Todo" >> $GITHUB_ENV
           fi
 
       - name: Update PR Status
@@ -102,17 +104,98 @@ jobs:
         with:
           github-token: ${{ secrets.GH_PROJECT_TOKEN }}
           script: |
-            // Script pour mettre à jour le statut de la PR
-            // Remplacez project_id et colonne_id par vos valeurs réelles
-            const projectId = 'PROJECT_ID';
-            const columnIds = {
-              'To Do': 'TODO_COLUMN_ID',
-              'Review': 'REVIEW_COLUMN_ID',
-              'Done': 'DONE_COLUMN_ID'
+            // Configuration pour le projet et ses champs de statut
+            const projectNumber = 1;
+            const statusFieldId = 'PVTSSF_lADOC_7Lj84AzUaFzgpIZ2k';
+            const statusOptions = {
+              'Todo': 'f75ad846',
+              'In Progress': '47fc9ee4',
+              'Review': '9bfffa30',
+              'Done': '98236657'
             };
 
-            // Cette partie nécessiterait l'API GraphQL de GitHub pour être implémentée correctement
-            console.log(`Updating PR status to: ${{ env.status }}`);
+            // Obtenir le statut à appliquer
+            const statusName = process.env.status || 'Todo';
+            const statusOptionId = statusOptions[statusName];
+
+            if (!statusOptionId) {
+              console.log(`Status ${statusName} not found in options. Using default Todo status.`);
+              statusOptionId = statusOptions['Todo'];
+            }
+
+            try {
+              // Récupérer l'ID du projet
+              const projectQuery = `query {
+                organization(login: "${context.repo.owner}") {
+                  projectV2(number: ${projectNumber}) {
+                    id
+                  }
+                }
+              }`;
+              
+              const projectData = await github.graphql(projectQuery);
+              const projectId = projectData.organization.projectV2.id;
+              
+              // Trouver l'élément de projet correspondant à cette PR
+              const itemQuery = `query {
+                organization(login: "${context.repo.owner}") {
+                  projectV2(number: ${projectNumber}) {
+                    items(first: 100) {
+                      nodes {
+                        id
+                        content {
+                          ... on PullRequest {
+                            number
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }`;
+              
+              const itemsData = await github.graphql(itemQuery);
+              const items = itemsData.organization.projectV2.items.nodes;
+              const prNumber = context.payload.pull_request.number;
+              
+              let itemId = null;
+              for (const item of items) {
+                if (item.content && item.content.number === prNumber) {
+                  itemId = item.id;
+                  break;
+                }
+              }
+              
+              if (!itemId) {
+                console.log(`PR #${prNumber} not found in project board. It might not have been added yet.`);
+                return;
+              }
+              
+              // Mettre à jour le statut
+              const mutation = `mutation {
+                updateProjectV2ItemFieldValue(
+                  input: {
+                    projectId: "${projectId}",
+                    itemId: "${itemId}",
+                    fieldId: "${statusFieldId}",
+                    value: { 
+                      singleSelectOptionId: "${statusOptionId}"
+                    }
+                  }
+                ) {
+                  projectV2Item {
+                    id
+                  }
+                }
+              }`;
+              
+              await github.graphql(mutation);
+              console.log(`Successfully updated PR #${prNumber} status to ${statusName}`);
+              
+            } catch (error) {
+              console.error(`Error updating PR status: ${error.message}`);
+              core.setFailed(error.message);
+            }
 
       - name: Close linked issue when PR is merged
         if: github.event.action == 'closed' && github.event.pull_request.merged == true

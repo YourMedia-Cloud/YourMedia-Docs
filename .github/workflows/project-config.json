@@ -1,0 +1,16 @@
+{
+    "projectNumber": 1,
+    "statusField": "PVTSSF_lADOC_7Lj84AzUaFzgpIZ2k",
+    "statusValues": {
+      "Todo": "f75ad846",
+      "In Progress": "47fc9ee4",
+      "Review": "9bfffa30",
+      "Done": "98236657"
+    },
+    "statusMapping": {
+      "To Do": "Todo",
+      "In Progress": "In Progress",
+      "Review": "Review",
+      "Done": "Done"
+    }
+  }
