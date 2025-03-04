@@ -105,7 +105,7 @@ jobs:
       - name: Read project configuration
         id: project-config
         run: |
-          CONFIG=$(cat .github/project-config.json)
+          CONFIG=$(cat .github/workflows/project-config.json))
           echo "config=$CONFIG" >> $GITHUB_OUTPUT
 
       - name: Update PR Status
