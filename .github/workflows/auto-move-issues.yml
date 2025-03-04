@@ -7,7 +7,7 @@ on:
     types: [opened, review_requested, closed]
 
 jobs:
-  # 🔹 Gestion des issues - Projet principal
+  # Gestion des issues - Projet principal
   process-issues:
     runs-on: ubuntu-latest
     if: github.event_name == 'issues'
@@ -15,7 +15,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
         with:
-          fetch-depth: 0 # Récupérer tout l'historique
+          fetch-depth: 0
 
       - name: Debug - Liste des fichiers
         run: ls -la .github/workflows
@@ -26,7 +26,7 @@ jobs:
           project-url: "https://github.com/orgs/YourMedia-Cloud/projects/1"
           github-token: ${{ secrets.GH_PROJECT_TOKEN }}
 
-  # 🔹 Gestion des issues spécifiques à l'infrastructure
+  # Gestion des issues spécifiques à l'infrastructure
   process-infra-issues:
     needs: process-issues
     if: github.event_name == 'issues' && contains(github.event.issue.labels.*.name, 'infra')
@@ -38,7 +38,7 @@ jobs:
           project-url: "https://github.com/orgs/YourMedia-Cloud/projects/2"
           github-token: ${{ secrets.GH_PROJECT_TOKEN }}
 
-  # 🔹 Gestion des Pull Requests
+  # Gestion des Pull Requests
   process-pull-requests:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -46,7 +46,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
         with:
-          fetch-depth: 0 # Récupérer tout l'historique
+          fetch-depth: 0
 
       - name: Debug - Liste des fichiers
         run: ls -la .github/workflows
@@ -70,28 +70,25 @@ jobs:
       - name: Set PR status
         id: set-status
         run: |
-          if [ "${{ github.event.action }}" == "review_requested" ]; then
-            echo "status=Review" >> $GITHUB_ENV
-          elif [ "${{ github.event.action }}" == "closed" ] && [ "${{ github.event.pull_request.merged }}" == "true" ]; then
-            echo "status=Done" >> $GITHUB_ENV
-          elif [ "${{ github.event.action }}" == "opened" ]; then
-            echo "status=In Progress" >> $GITHUB_ENV
-          else
-            echo "status=Todo" >> $GITHUB_ENV
-          fi
+          case "${{ github.event.action }}" in
+            review_requested) echo "status=Review" >> $GITHUB_ENV ;;
+            closed) if [ "${{ github.event.pull_request.merged }}" == "true" ]; then echo "status=Done" >> $GITHUB_ENV; fi ;;
+            opened) echo "status=In Progress" >> $GITHUB_ENV ;;
+            *) echo "status=Todo" >> $GITHUB_ENV ;;
+          esac
 
       - name: Lire la configuration du projet
         id: project-config
         run: |
           CONFIG=$(jq -c . < .github/workflows/project-config.json)
-          echo "config=$CONFIG" >> $GITHUB_OUTPUT
+          echo "config=$CONFIG" >> $GITHUB_ENV
 
       - name: Update PR Status
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GH_PROJECT_TOKEN }}
           script: |
-            const config = JSON.parse(`${{ steps.project-config.outputs.config }}`);
+            const config = JSON.parse(process.env.config);
             const statusName = process.env.status || 'Todo';
             const statusMapping = config.statusMapping || {};
             const statusOptions = config.statusValues || {};
@@ -100,32 +97,11 @@ jobs:
             console.log(`🔄 Updating PR status to: ${projectStatus}`);
 
             try {
-              const projectQuery = `query {
-                organization(login: "${context.repo.owner}") {
-                  projectV2(number: ${config.projectNumber}) {
-                    id
-                  }
-                }
-              }`;
+              const projectQuery = `query { organization(login: "${context.repo.owner}") { projectV2(number: ${config.projectNumber}) { id } } }`;
               const projectData = await github.graphql(projectQuery);
               const projectId = projectData.organization.projectV2.id;
 
-              const itemQuery = `query {
-                organization(login: "${context.repo.owner}") {
-                  projectV2(number: ${config.projectNumber}) {
-                    items(first: 100) {
-                      nodes {
-                        id
-                        content {
-                          ... on PullRequest {
-                            number
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }`;
+              const itemQuery = `query { organization(login: "${context.repo.owner}") { projectV2(number: ${config.projectNumber}) { items(first: 100) { nodes { id content { ... on PullRequest { number } } } } } } }`;
               const itemsData = await github.graphql(itemQuery);
               const items = itemsData.organization.projectV2.items.nodes;
               const prNumber = context.payload.pull_request.number;
@@ -143,21 +119,9 @@ jobs:
                 return;
               }
 
-              const mutation = `mutation {
-                updateProjectV2ItemFieldValue(
-                  input: {
-                    projectId: "${projectId}",
-                    itemId: "${itemId}",
-                    fieldId: "${config.statusField}",
-                    value: { singleSelectOptionId: "${statusOptionId}" }
-                  }
-                ) {
-                  projectV2Item { id }
-                }
-              }`;
-
+              const mutation = `mutation { updateProjectV2ItemFieldValue(input: { projectId: "${projectId}", itemId: "${itemId}", fieldId: "${config.statusField}", value: { singleSelectOptionId: "${statusOptionId}" } }) { projectV2Item { id } } }`;
               await github.graphql(mutation);
-              console.log(`PR #${prNumber} status updated to ${projectStatus}`);
+              console.log(`✅ PR #${prNumber} status updated to ${projectStatus}`);
 
             } catch (error) {
               console.error(`Error updating PR status: ${error.message}`);
