@@ -1,4 +1,5 @@
 name: Auto Move Issues & PRs in Project Board
+
 on:
   issues:
     types: [opened, labeled]
@@ -6,18 +7,26 @@ on:
     types: [opened, review_requested, closed]
 
 jobs:
-  # Gestion des issues - Projet principal
+  # 🔹 Gestion des issues - Projet principal
   process-issues:
     runs-on: ubuntu-latest
     if: github.event_name == 'issues'
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0 # Récupérer tout l'historique
+
+      - name: Debug - Liste des fichiers
+        run: ls -la .github/workflows
+
       - name: Move issue to main project
         uses: actions/add-to-project@v0.5.0
         with:
           project-url: "https://github.com/orgs/YourMedia-Cloud/projects/1"
           github-token: ${{ secrets.GH_PROJECT_TOKEN }}
 
-  # Gestion des issues spécifiques à l'infrastructure
+  # 🔹 Gestion des issues spécifiques à l'infrastructure
   process-infra-issues:
     needs: process-issues
     if: github.event_name == 'issues' && contains(github.event.issue.labels.*.name, 'infra')
@@ -29,7 +38,7 @@ jobs:
           project-url: "https://github.com/orgs/YourMedia-Cloud/projects/2"
           github-token: ${{ secrets.GH_PROJECT_TOKEN }}
 
-  # Transfert des issues vers le bon dépôt en fonction du label
+  # 🔹 Transfert des issues vers le bon dépôt en fonction du label
   transfer-issue:
     needs: process-issues
     if: github.event_name == 'issues'
@@ -53,35 +62,28 @@ jobs:
             echo "repo_name=YourMedia-Docs" >> $GITHUB_OUTPUT
           fi
 
-      - name: Transfer Issue with GitHub Script
-        uses: actions/github-script@v6
-        with:
-          github-token: ${{ secrets.GH_PROJECT_TOKEN }}
-          script: |
-            const targetRepo = '${{ steps.repo-selector.outputs.repo_name }}';
-            const issueNumber = context.payload.issue.number;
-
-            try {
-              await github.rest.issues.transfer({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: issueNumber,
-                new_owner: 'YourMedia-Cloud',
-                new_repo: targetRepo
-              });
-              console.log(`Successfully transferred issue #${issueNumber} to YourMedia-Cloud/${targetRepo}`);
-            } catch (error) {
-              console.error(`Error transferring issue: ${error.message}`);
-              core.setFailed(error.message);
-            }
-
-  # Gestion des pull requests
+  # 🔹 Gestion des Pull Requests
   process-pull-requests:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
+        with:
+          fetch-depth: 0 # Récupérer tout l'historique
+
+      - name: Debug - Liste des fichiers
+        run: ls -la .github/workflows
+
+      - name: Vérification existence de project-config.json
+        run: |
+          if [ -f ".github/workflows/project-config.json" ]; then
+            echo "project-config.json trouvé"
+            cat .github/workflows/project-config.json
+          else
+            echo "project-config.json introuvable !"
+            exit 1
+          fi
 
       - name: Move PR to project
         uses: actions/add-to-project@v0.5.0
@@ -102,41 +104,26 @@ jobs:
             echo "status=Todo" >> $GITHUB_ENV
           fi
 
-      - name: Read project configuration
+      - name: Lire la configuration du projet
         id: project-config
         run: |
-          if [ -f ".github/workflows/project-config.json" ]; then
-            CONFIG=$(cat .github/workflows/project-config.json)
-            echo "config=$CONFIG" >> $GITHUB_OUTPUT
-          else
-            echo "Configuration file not found!"
-            exit 1
-          fi
+          CONFIG=$(cat .github/workflows/project-config.json)
+          echo "config=$CONFIG" >> $GITHUB_OUTPUT
 
       - name: Update PR Status
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GH_PROJECT_TOKEN }}
           script: |
-            // Charger la configuration du projet
             const config = JSON.parse('${{ steps.project-config.outputs.config }}');
-
-            // Obtenir le statut à appliquer
             const statusName = process.env.status || 'Todo';
             const statusMapping = config.statusMapping || {};
             const statusOptions = config.statusValues || {};
-
-            // Convertir le statut du workflow au format du projet
             const projectStatus = statusMapping[statusName] || statusName;
-            const statusOptionId = statusOptions[projectStatus];
-
-            if (!statusOptionId) {
-              console.log(`Status ${projectStatus} not found in options. Using default Todo status.`);
-              statusOptionId = statusOptions['Todo'];
-            }
+            let statusOptionId = statusOptions[projectStatus] || statusOptions['Todo'];
+            console.log(`Updating PR status to: ${projectStatus}`);
 
             try {
-              // Récupérer l'ID du projet
               const projectQuery = `query {
                 organization(login: "${context.repo.owner}") {
                   projectV2(number: ${config.projectNumber}) {
@@ -144,11 +131,9 @@ jobs:
                   }
                 }
               }`;
-              
               const projectData = await github.graphql(projectQuery);
               const projectId = projectData.organization.projectV2.id;
-              
-              // Trouver l'élément de projet correspondant à cette PR
+
               const itemQuery = `query {
                 organization(login: "${context.repo.owner}") {
                   projectV2(number: ${config.projectNumber}) {
@@ -165,11 +150,10 @@ jobs:
                   }
                 }
               }`;
-              
               const itemsData = await github.graphql(itemQuery);
               const items = itemsData.organization.projectV2.items.nodes;
               const prNumber = context.payload.pull_request.number;
-              
+
               let itemId = null;
               for (const item of items) {
                 if (item.content && item.content.number === prNumber) {
@@ -177,33 +161,28 @@ jobs:
                   break;
                 }
               }
-              
+
               if (!itemId) {
-                console.log(`PR #${prNumber} not found in project board. It might not have been added yet.`);
+                console.log(`PR #${prNumber} not found in project board.`);
                 return;
               }
-              
-              // Mettre à jour le statut
+
               const mutation = `mutation {
                 updateProjectV2ItemFieldValue(
                   input: {
                     projectId: "${projectId}",
                     itemId: "${itemId}",
                     fieldId: "${config.statusField}",
-                    value: { 
-                      singleSelectOptionId: "${statusOptionId}"
-                    }
+                    value: { singleSelectOptionId: "${statusOptionId}" }
                   }
                 ) {
-                  projectV2Item {
-                    id
-                  }
+                  projectV2Item { id }
                 }
               }`;
-              
+
               await github.graphql(mutation);
-              console.log(`Successfully updated PR #${prNumber} status to ${projectStatus}`);
-              
+              console.log(`✅ PR #${prNumber} status updated to ${projectStatus}`);
+
             } catch (error) {
               console.error(`Error updating PR status: ${error.message}`);
               core.setFailed(error.message);
@@ -217,7 +196,6 @@ jobs:
           script: |
             const prBody = context.payload.pull_request.body || '';
             const match = prBody.match(/Closes #(\d+)/);
-
             if (match && match[1]) {
               const issueNumber = match[1];
               await github.rest.issues.update({
@@ -226,5 +204,5 @@ jobs:
                 issue_number: issueNumber,
                 state: 'closed'
               });
-              console.log(`Closed issue #${issueNumber}`);
+              console.log(`✅ Closed issue #${issueNumber}`);
             }
