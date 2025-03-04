@@ -27,6 +27,176 @@ jobs:
           project-url: "https://github.com/orgs/YourMedia-Cloud/projects/2"
           github-token: ${{ secrets.GH_PROJECT_TOKEN }}
 
+      # Nouvelles étapes pour gérer le statut des issues
+      - name: Vérification existence de project-config.json
+        id: check-config
+        continue-on-error: true
+        run: |
+          if [ -f ".github/workflows/project-config.json" ]; then
+            echo "config_exists=true" >> $GITHUB_OUTPUT
+            echo "project-config.json trouvé"
+            cat .github/workflows/project-config.json
+          else
+            echo "config_exists=false" >> $GITHUB_OUTPUT
+            echo "project-config.json introuvable !"
+          fi
+
+      - name: Set issue status
+        if: steps.check-config.outputs.config_exists == 'true'
+        id: set-status
+        run: |
+          # Par défaut, les nouvelles issues sont "Todo"
+          echo "status=Todo" >> $GITHUB_ENV
+
+          # Changez le statut en fonction des étiquettes si nécessaire
+          if [[ "${{ contains(github.event.issue.labels.*.name, 'in-progress') }}" == "true" ]]; then
+            echo "status=In Progress" >> $GITHUB_ENV
+          elif [[ "${{ contains(github.event.issue.labels.*.name, 'review') }}" == "true" ]]; then
+            echo "status=Review" >> $GITHUB_ENV
+          fi
+
+      - name: Lire la configuration du projet
+        if: steps.check-config.outputs.config_exists == 'true'
+        id: project-config
+        run: |
+          CONFIG=$(jq -c . < .github/workflows/project-config.json)
+          echo "CONFIG=$CONFIG" >> $GITHUB_ENV
+
+      - name: Update Issue Status
+        if: steps.check-config.outputs.config_exists == 'true'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GH_PROJECT_TOKEN }}
+          script: |
+            const config = JSON.parse(process.env.CONFIG);
+            const statusName = process.env.status || 'Todo';
+            const statusMapping = config.statusMapping || {};
+            const statusOptions = config.statusValues || {};
+            const projectStatus = statusMapping[statusName] || statusName;
+            let statusOptionId = statusOptions[projectStatus] || statusOptions['Todo'];
+
+            console.log(`Configuration chargée:`, JSON.stringify(config, null, 2));
+            console.log(`Nom du statut pour l'issue: ${statusName}`);
+            console.log(`Statut du projet: ${projectStatus}`);
+            console.log(`ID de l'option de statut: ${statusOptionId}`);
+
+            try {
+              // Vérifier les autorisations du token
+              console.log(`Vérification des autorisations du token...`);
+              const { data: tokenData } = await github.rest.users.getAuthenticated();
+              console.log(`Token authentifié pour l'utilisateur: ${tokenData.login}`);
+              
+              // Obtenir l'ID du projet
+              console.log(`Recherche de l'ID du projet pour le numéro ${config.projectNumber}...`);
+              const projectQuery = `query { organization(login: "${context.repo.owner}") { projectV2(number: ${config.projectNumber}) { id title } } }`;
+              const projectData = await github.graphql(projectQuery);
+              const projectId = projectData.organization.projectV2.id;
+              const projectTitle = projectData.organization.projectV2.title;
+              console.log(`Projet trouvé: ${projectTitle} (ID: ${projectId})`);
+              
+              // Vérifier que le champ de statut existe
+              console.log(`Vérification du champ de statut: ${config.statusField}...`);
+              const fieldQuery = `query {
+                node(id: "${projectId}") {
+                  ... on ProjectV2 {
+                    fields(first: 20) {
+                      nodes {
+                        ... on ProjectV2Field {
+                          id
+                          name
+                          dataType
+                        }
+                        ... on ProjectV2IterationField {
+                          id
+                          name
+                          dataType
+                        }
+                        ... on ProjectV2SingleSelectField {
+                          id
+                          name
+                          dataType
+                          options {
+                            id
+                            name
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }`;
+              
+              const fieldData = await github.graphql(fieldQuery);
+              console.log(`Champs disponibles dans le projet:`);
+              
+              let statusFieldFound = false;
+              fieldData.node.fields.nodes.forEach(field => {
+                console.log(`- ${field.name} (${field.dataType}): ${field.id}`);
+                
+                if (field.id === config.statusField) {
+                  statusFieldFound = true;
+                  console.log(`  [TROUVÉ] Ce champ correspond au champ de statut configuré!`);
+                }
+                
+                if (field.dataType === 'SINGLE_SELECT' && field.options) {
+                  console.log(`  Options:`);
+                  field.options.forEach(option => {
+                    console.log(`    - ${option.name}: ${option.id}`);
+                    
+                    if (option.id === statusOptionId) {
+                      console.log(`      [TROUVÉ] Cette option correspond à l'option de statut configurée!`);
+                    }
+                  });
+                }
+              });
+              
+              if (!statusFieldFound) {
+                throw new Error(`Le champ de statut configuré (${config.statusField}) n'a pas été trouvé dans le projet!`);
+              }
+              
+              // Trouver l'issue dans le projet
+              console.log(`Recherche de l'issue #${context.payload.issue.number} dans le projet...`);
+              const itemQuery = `query { organization(login: "${context.repo.owner}") { projectV2(number: ${config.projectNumber}) { items(first: 100) { nodes { id content { ... on Issue { number title } } } } } } }`;
+              const itemsData = await github.graphql(itemQuery);
+              const items = itemsData.organization.projectV2.items.nodes;
+              const issueNumber = context.payload.issue.number;
+              
+              let itemId = null;
+              for (const item of items) {
+                if (item.content && 
+                    item.content.number === issueNumber && 
+                    item.content.__typename === 'Issue') {
+                  itemId = item.id;
+                  console.log(`Issue #${issueNumber} trouvée dans le projet: ${item.content.title} (ID: ${itemId})`);
+                  break;
+                }
+              }
+              
+              if (!itemId) {
+                console.log(`Issue #${issueNumber} non trouvée dans le tableau de projet.`);
+                console.log(`Cela peut être normal si l'issue vient d'être créée. Le workflow réessaiera lors de la prochaine exécution.`);
+                return;
+              }
+              
+              // Mettre à jour le statut de l'issue
+              console.log(`Mise à jour du statut vers ${projectStatus} avec l'option ID ${statusOptionId}...`);
+              const mutation = `mutation { updateProjectV2ItemFieldValue(input: { projectId: "${projectId}", itemId: "${itemId}", fieldId: "${config.statusField}", value: { singleSelectOptionId: "${statusOptionId}" } }) { projectV2Item { id } } }`;
+              await github.graphql(mutation);
+              console.log(`Issue #${issueNumber} statut mis à jour avec succès vers ${projectStatus}`);
+              
+            } catch (error) {
+              console.error(`Erreur lors de la mise à jour du statut de l'issue: ${error.message}`);
+              
+              // Afficher plus de détails sur l'erreur
+              if (error.message.includes('Resource not accessible by integration')) {
+                console.error(`Il semble que le token n'ait pas les autorisations suffisantes. Vérifiez que le token GH_PROJECT_TOKEN a accès aux projets de l'organisation.`);
+              } else if (error.message.includes('Could not resolve to a node')) {
+                console.error(`Impossible de trouver la ressource. Vérifiez que les IDs de projet, de champ et d'option sont corrects.`);
+              }
+              
+              core.setFailed(error.message);
+            }
+
   # Gestion des issues spécifiques à l'infrastructure
   process-infra-issues:
     needs: process-issues
