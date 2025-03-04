@@ -38,30 +38,6 @@ jobs:
           project-url: "https://github.com/orgs/YourMedia-Cloud/projects/2"
           github-token: ${{ secrets.GH_PROJECT_TOKEN }}
 
-  # 🔹 Transfert des issues vers le bon dépôt en fonction du label
-  transfer-issue:
-    needs: process-issues
-    if: github.event_name == 'issues'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Determine Target Repo
-        id: repo-selector
-        run: |
-          LABELS="${{ toJSON(github.event.issue.labels.*.name) }}"
-          if [[ "$LABELS" == *"infra"* ]]; then
-            echo "repo_name=YourMedia-Infrastructure" >> $GITHUB_OUTPUT
-          elif [[ "$LABELS" == *"api"* ]]; then
-            echo "repo_name=YourMedia-API" >> $GITHUB_OUTPUT
-          elif [[ "$LABELS" == *"mobile"* ]]; then
-            echo "repo_name=YourMedia-Mobile" >> $GITHUB_OUTPUT
-          elif [[ "$LABELS" == *"monitoring"* ]]; then
-            echo "repo_name=YourMedia-Monitoring" >> $GITHUB_OUTPUT
-          elif [[ "$LABELS" == *"ci-cd"* ]]; then
-            echo "repo_name=YourMedia-CICD" >> $GITHUB_OUTPUT
-          else
-            echo "repo_name=YourMedia-Docs" >> $GITHUB_OUTPUT
-          fi
-
   # 🔹 Gestion des Pull Requests
   process-pull-requests:
     if: github.event_name == 'pull_request'
@@ -107,7 +83,7 @@ jobs:
       - name: Lire la configuration du projet
         id: project-config
         run: |
-          CONFIG=$(cat .github/workflows/project-config.json)
+          CONFIG=$(jq -c . < .github/workflows/project-config.json)
           echo "config=$CONFIG" >> $GITHUB_OUTPUT
 
       - name: Update PR Status
@@ -115,13 +91,13 @@ jobs:
         with:
           github-token: ${{ secrets.GH_PROJECT_TOKEN }}
           script: |
-            const config = JSON.parse('${{ steps.project-config.outputs.config }}');
+            const config = JSON.parse(`${{ steps.project-config.outputs.config }}`);
             const statusName = process.env.status || 'Todo';
             const statusMapping = config.statusMapping || {};
             const statusOptions = config.statusValues || {};
             const projectStatus = statusMapping[statusName] || statusName;
             let statusOptionId = statusOptions[projectStatus] || statusOptions['Todo'];
-            console.log(`Updating PR status to: ${projectStatus}`);
+            console.log(`🔄 Updating PR status to: ${projectStatus}`);
 
             try {
               const projectQuery = `query {
@@ -181,7 +157,7 @@ jobs:
               }`;
 
               await github.graphql(mutation);
-              console.log(`✅ PR #${prNumber} status updated to ${projectStatus}`);
+              console.log(`PR #${prNumber} status updated to ${projectStatus}`);
 
             } catch (error) {
               console.error(`Error updating PR status: ${error.message}`);
