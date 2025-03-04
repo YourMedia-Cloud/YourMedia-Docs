@@ -1,5 +1,4 @@
 name: Auto Move Issues & PRs in Project Board
-
 on:
   issues:
     types: [opened, labeled]
@@ -21,7 +20,7 @@ jobs:
   # Gestion des issues spécifiques à l'infrastructure
   process-infra-issues:
     needs: process-issues
-    if: contains(join(github.event.issue.labels.*.name, ' '), 'infra')
+    if: github.event_name == 'issues' && contains(github.event.issue.labels.*.name, 'infra')
     runs-on: ubuntu-latest
     steps:
       - name: Move issue to Infrastructure project
@@ -37,31 +36,44 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Determine Target Repo
-        id: repo
+        id: repo-selector
         run: |
-          LABELS="${{ join(github.event.issue.labels.*.name, ' ') }}"
-          if [[ $LABELS == *"infra"* ]]; then
-            echo "repo=YourMedia-Infrastructure" >> $GITHUB_ENV
-          elif [[ $LABELS == *"api"* ]]; then
-            echo "repo=YourMedia-API" >> $GITHUB_ENV
-          elif [[ $LABELS == *"mobile"* ]]; then
-            echo "repo=YourMedia-Mobile" >> $GITHUB_ENV
-          elif [[ $LABELS == *"monitoring"* ]]; then
-            echo "repo=YourMedia-Monitoring" >> $GITHUB_ENV
-          elif [[ $LABELS == *"ci-cd"* ]]; then
-            echo "repo=YourMedia-CICD" >> $GITHUB_ENV
+          LABELS="${{ toJSON(github.event.issue.labels.*.name) }}"
+          if [[ "$LABELS" == *"infra"* ]]; then
+            echo "repo_name=YourMedia-Infrastructure" >> $GITHUB_OUTPUT
+          elif [[ "$LABELS" == *"api"* ]]; then
+            echo "repo_name=YourMedia-API" >> $GITHUB_OUTPUT
+          elif [[ "$LABELS" == *"mobile"* ]]; then
+            echo "repo_name=YourMedia-Mobile" >> $GITHUB_OUTPUT
+          elif [[ "$LABELS" == *"monitoring"* ]]; then
+            echo "repo_name=YourMedia-Monitoring" >> $GITHUB_OUTPUT
+          elif [[ "$LABELS" == *"ci-cd"* ]]; then
+            echo "repo_name=YourMedia-CICD" >> $GITHUB_OUTPUT
           else
-            echo "repo=YourMedia-Docs" >> $GITHUB_ENV
+            echo "repo_name=YourMedia-Docs" >> $GITHUB_OUTPUT
           fi
 
-      - name: Transfer Issue to correct repo
-        uses: actions-cool/issues-helper@v3
+      - name: Transfer Issue with GitHub Script
+        uses: actions/github-script@v6
         with:
-          actions: transfer
-          token: ${{ secrets.GH_PROJECT_TOKEN }}
-          issue-number: ${{ github.event.issue.number }}
-          owner: "YourMedia-Cloud"
-          repo: ${{ env.repo }}
+          github-token: ${{ secrets.GH_PROJECT_TOKEN }}
+          script: |
+            const targetRepo = '${{ steps.repo-selector.outputs.repo_name }}';
+            const issueNumber = context.payload.issue.number;
+
+            try {
+              await github.rest.issues.transfer({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                new_owner: 'YourMedia-Cloud',
+                new_repo: targetRepo
+              });
+              console.log(`Successfully transferred issue #${issueNumber} to YourMedia-Cloud/${targetRepo}`);
+            } catch (error) {
+              console.error(`Error transferring issue: ${error.message}`);
+              core.setFailed(error.message);
+            }
 
   # Gestion des pull requests
   process-pull-requests:
@@ -74,28 +86,50 @@ jobs:
           project-url: "https://github.com/orgs/YourMedia-Cloud/projects/1"
           github-token: ${{ secrets.GH_PROJECT_TOKEN }}
 
-      - name: Update PR Status via API
+      - name: Set PR status
+        id: set-status
         run: |
-          STATUS="To Do"
-          if [ "${{ github.event.action }}" == "review_requested" ]; then STATUS="Review"; fi
-          if [ "${{ github.event.pull_request.merged }}" == "true" ]; then STATUS="Done"; fi
+          if [ "${{ github.event.action }}" == "review_requested" ]; then
+            echo "status=Review" >> $GITHUB_ENV
+          elif [ "${{ github.event.action }}" == "closed" ] && [ "${{ github.event.pull_request.merged }}" == "true" ]; then
+            echo "status=Done" >> $GITHUB_ENV
+          else
+            echo "status=To Do" >> $GITHUB_ENV
+          fi
 
-          curl -X POST -H "Authorization: Bearer ${{ secrets.GH_PROJECT_TOKEN }}" \
-          -H "Accept: application/vnd.github.v3+json" \
-          https://api.github.com/projects/columns/cards \
-          -d '{
-            "content_id": ${{ github.event.pull_request.id }},
-            "content_type": "PullRequest",
-            "column_id": 12345678
-          }'
+      - name: Update PR Status
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GH_PROJECT_TOKEN }}
+          script: |
+            // Script pour mettre à jour le statut de la PR
+            // Remplacez project_id et colonne_id par vos valeurs réelles
+            const projectId = 'PROJECT_ID';
+            const columnIds = {
+              'To Do': 'TODO_COLUMN_ID',
+              'Review': 'REVIEW_COLUMN_ID',
+              'Done': 'DONE_COLUMN_ID'
+            };
+
+            // Cette partie nécessiterait l'API GraphQL de GitHub pour être implémentée correctement
+            console.log(`Updating PR status to: ${{ env.status }}`);
 
       - name: Close linked issue when PR is merged
-        if: github.event.pull_request.merged == true
-        run: |
-          ISSUE_NUMBER=$(echo "${{ github.event.pull_request.body }}" | grep -oP '(?<=Closes #)\d+')
-          if [[ ! -z "$ISSUE_NUMBER" ]]; then
-            curl -X PATCH -H "Authorization: Bearer ${{ secrets.GH_PROJECT_TOKEN }}" \
-            -H "Accept: application/vnd.github.v3+json" \
-            https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_NUMBER \
-            -d '{"state": "closed"}'
-          fi
+        if: github.event.action == 'closed' && github.event.pull_request.merged == true
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GH_PROJECT_TOKEN }}
+          script: |
+            const prBody = context.payload.pull_request.body || '';
+            const match = prBody.match(/Closes #(\d+)/);
+
+            if (match && match[1]) {
+              const issueNumber = match[1];
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                state: 'closed'
+              });
+              console.log(`Closed issue #${issueNumber}`);
+            }
