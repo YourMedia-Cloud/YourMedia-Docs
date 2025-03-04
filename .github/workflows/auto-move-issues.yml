@@ -105,8 +105,13 @@ jobs:
       - name: Read project configuration
         id: project-config
         run: |
-          CONFIG=$(cat .github/workflows/project-config.json))
-          echo "config=$CONFIG" >> $GITHUB_OUTPUT
+          if [ -f ".github/workflows/project-config.json" ]; then
+            CONFIG=$(cat .github/workflows/project-config.json)
+            echo "config=$CONFIG" >> $GITHUB_OUTPUT
+          else
+            echo "Configuration file not found!"
+            exit 1
+          fi
 
       - name: Update PR Status
         uses: actions/github-script@v6
