@@ -1,9 +1,11 @@
 name: Auto Move Issues & PRs in Project Board
+
 on:
   issues:
     types: [opened, labeled]
   pull_request:
     types: [opened, review_requested, closed]
+  workflow_dispatch: # Permet l'exécution manuelle du workflow
 
 jobs:
   # Gestion des issues - Projet principal
@@ -11,10 +13,18 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'issues'
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Debug - Liste des fichiers
+        run: ls -la .github/workflows
+
       - name: Move issue to main project
         uses: actions/add-to-project@v0.5.0
         with:
-          project-url: "https://github.com/orgs/YourMedia-Cloud/projects/1"
+          project-url: "https://github.com/orgs/YourMedia-Cloud/projects/2"
           github-token: ${{ secrets.GH_PROJECT_TOKEN }}
 
   # Gestion des issues spécifiques à l'infrastructure
@@ -29,77 +39,330 @@ jobs:
           project-url: "https://github.com/orgs/YourMedia-Cloud/projects/2"
           github-token: ${{ secrets.GH_PROJECT_TOKEN }}
 
-  # Transfert des issues vers le bon dépôt en fonction du label
-  transfer-issue:
-    needs: process-issues
-    if: github.event_name == 'issues'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Determine Target Repo
-        id: repo-selector
-        run: |
-          LABELS="${{ toJSON(github.event.issue.labels.*.name) }}"
-          if [[ "$LABELS" == *"infra"* ]]; then
-            echo "repo_name=YourMedia-Infrastructure" >> $GITHUB_ENV
-          elif [[ "$LABELS" == *"api"* ]]; then
-            echo "repo_name=YourMedia-API" >> $GITHUB_ENV
-          elif [[ "$LABELS" == *"mobile"* ]]; then
-            echo "repo_name=YourMedia-Mobile" >> $GITHUB_ENV
-          elif [[ "$LABELS" == *"monitoring"* ]]; then
-            echo "repo_name=YourMedia-Monitoring" >> $GITHUB_ENV
-          elif [[ "$LABELS" == *"ci-cd"* ]]; then
-            echo "repo_name=YourMedia-CICD" >> $GITHUB_ENV
-          else
-            echo "repo_name=YourMedia-Docs" >> $GITHUB_ENV
-          fi
-
-      - name: Transfer Issue with GitHub Script
-        uses: actions/github-script@v6
-        with:
-          github-token: ${{ secrets.GH_PROJECT_TOKEN }}
-          script: |
-            const targetRepo = process.env.repo_name;
-            const issueNumber = context.payload.issue.number;
-
-            try {
-              const newIssue = await github.rest.issues.create({
-                owner: "YourMedia-Cloud",
-                repo: targetRepo,
-                title: context.payload.issue.title,
-                body: context.payload.issue.body + "\n\n> **Issue transférée depuis** [" + context.repo.repo + "](" + context.payload.issue.html_url + ")",
-                labels: context.payload.issue.labels.map(label => label.name)
-              });
-
-              console.log(`Issue créée : ${newIssue.data.html_url}`);
-
-              await github.rest.issues.createComment({
-                owner: "YourMedia-Cloud",
-                repo: context.repo.repo,
-                issue_number: issueNumber,
-                body: `✅ Cette issue a été transférée vers **[${targetRepo}](${newIssue.data.html_url})**`
-              });
-
-              await github.rest.issues.update({
-                owner: "YourMedia-Cloud",
-                repo: context.repo.repo,
-                issue_number: issueNumber,
-                state: "closed"
-              });
-            } catch (error) {
-              console.error(`Error transferring issue: ${error.message}`);
-              core.setFailed(error.message);
-            }
-
-  # Gestion des pull requests
+  # Gestion des Pull Requests
   process-pull-requests:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
 
+      - name: Debug - Liste des fichiers
+        run: ls -la .github/workflows
+
+      - name: Vérification existence de project-config.json
+        id: check-config
+        continue-on-error: true
+        run: |
+          if [ -f ".github/workflows/project-config.json" ]; then
+            echo "config_exists=true" >> $GITHUB_OUTPUT
+            echo "project-config.json trouvé"
+            cat .github/workflows/project-config.json
+          else
+            echo "config_exists=false" >> $GITHUB_OUTPUT
+            echo "project-config.json introuvable !"
+          fi
+
+      # Modifié pour pointer vers le projet 2 (au lieu du projet 1)
       - name: Move PR to project
+        if: github.event_name == 'pull_request'
         uses: actions/add-to-project@v0.5.0
         with:
-          project-url: "https://github.com/orgs/YourMedia-Cloud/projects/1"
+          project-url: "https://github.com/orgs/YourMedia-Cloud/projects/2"
           github-token: ${{ secrets.GH_PROJECT_TOKEN }}
+
+      - name: Set PR status
+        if: github.event_name == 'pull_request'
+        id: set-status
+        run: |
+          case "${{ github.event.action }}" in
+            review_requested) echo "status=Review" >> $GITHUB_ENV ;;
+            closed) if [ "${{ github.event.pull_request.merged }}" == "true" ]; then echo "status=Done" >> $GITHUB_ENV; fi ;;
+            opened) echo "status=In Progress" >> $GITHUB_ENV ;;
+            *) echo "status=Todo" >> $GITHUB_ENV ;;
+          esac
+
+      - name: Lire la configuration du projet
+        if: github.event_name == 'pull_request'
+        id: project-config
+        run: |
+          CONFIG=$(jq -c . < .github/workflows/project-config.json)
+          echo "CONFIG=$CONFIG" >> $GITHUB_ENV
+
+      - name: Update PR Status avec diagnostic amélioré
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GH_PROJECT_TOKEN }}
+          script: |
+            const config = JSON.parse(process.env.CONFIG);
+            const statusName = process.env.status || 'Todo';
+            const statusMapping = config.statusMapping || {};
+            const statusOptions = config.statusValues || {};
+            const projectStatus = statusMapping[statusName] || statusName;
+            let statusOptionId = statusOptions[projectStatus] || statusOptions['Todo'];
+
+            console.log(`Configuration chargée:`, JSON.stringify(config, null, 2));
+            console.log(`Nom du statut: ${statusName}`);
+            console.log(`Statut du projet: ${projectStatus}`);
+            console.log(`ID de l'option de statut: ${statusOptionId}`);
+
+            try {
+              // Vérifier les autorisations du token
+              console.log(`Vérification des autorisations du token...`);
+              const { data: tokenData } = await github.rest.users.getAuthenticated();
+              console.log(`Token authentifié pour l'utilisateur: ${tokenData.login}`);
+              
+              // Obtenir l'ID du projet
+              console.log(`Recherche de l'ID du projet pour le numéro ${config.projectNumber}...`);
+              const projectQuery = `query { organization(login: "${context.repo.owner}") { projectV2(number: ${config.projectNumber}) { id title } } }`;
+              const projectData = await github.graphql(projectQuery);
+              const projectId = projectData.organization.projectV2.id;
+              const projectTitle = projectData.organization.projectV2.title;
+              console.log(`Projet trouvé: ${projectTitle} (ID: ${projectId})`);
+
+              // Vérifier que le champ de statut existe
+              console.log(`Vérification du champ de statut: ${config.statusField}...`);
+              const fieldQuery = `query {
+                node(id: "${projectId}") {
+                  ... on ProjectV2 {
+                    fields(first: 20) {
+                      nodes {
+                        ... on ProjectV2Field {
+                          id
+                          name
+                          dataType
+                        }
+                        ... on ProjectV2IterationField {
+                          id
+                          name
+                          dataType
+                        }
+                        ... on ProjectV2SingleSelectField {
+                          id
+                          name
+                          dataType
+                          options {
+                            id
+                            name
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }`;
+              
+              const fieldData = await github.graphql(fieldQuery);
+              console.log(`Champs disponibles dans le projet:`);
+              
+              let statusFieldFound = false;
+              fieldData.node.fields.nodes.forEach(field => {
+                console.log(`- ${field.name} (${field.dataType}): ${field.id}`);
+                
+                if (field.id === config.statusField) {
+                  statusFieldFound = true;
+                  console.log(`  [TROUVÉ] Ce champ correspond au champ de statut configuré!`);
+                }
+                
+                if (field.dataType === 'SINGLE_SELECT' && field.options) {
+                  console.log(`  Options:`);
+                  field.options.forEach(option => {
+                    console.log(`    - ${option.name}: ${option.id}`);
+                    
+                    if (option.id === statusOptionId) {
+                      console.log(`      [TROUVÉ] Cette option correspond à l'option de statut configurée!`);
+                    }
+                  });
+                }
+              });
+              
+              if (!statusFieldFound) {
+                throw new Error(`Le champ de statut configuré (${config.statusField}) n'a pas été trouvé dans le projet!`);
+              }
+              
+              // Trouver le PR dans le projet
+              console.log(`Recherche du PR #${context.payload.pull_request.number} dans le projet...`);
+              const itemQuery = `query { organization(login: "${context.repo.owner}") { projectV2(number: ${config.projectNumber}) { items(first: 100) { nodes { id content { ... on PullRequest { number title } } } } } } }`;
+              const itemsData = await github.graphql(itemQuery);
+              const items = itemsData.organization.projectV2.items.nodes;
+              const prNumber = context.payload.pull_request.number;
+
+              let itemId = null;
+              for (const item of items) {
+                if (item.content && item.content.number === prNumber) {
+                  itemId = item.id;
+                  console.log(`PR #${prNumber} trouvé dans le projet: ${item.content.title} (ID: ${itemId})`);
+                  break;
+                }
+              }
+
+              if (!itemId) {
+                console.log(`PR #${prNumber} non trouvé dans le tableau de projet.`);
+                console.log(`Cela peut être normal si le PR vient d'être créé. Le workflow réessaiera lors de la prochaine exécution.`);
+                return;
+              }
+
+              // Mettre à jour le statut du PR
+              console.log(`Mise à jour du statut vers ${projectStatus} avec l'option ID ${statusOptionId}...`);
+              const mutation = `mutation { updateProjectV2ItemFieldValue(input: { projectId: "${projectId}", itemId: "${itemId}", fieldId: "${config.statusField}", value: { singleSelectOptionId: "${statusOptionId}" } }) { projectV2Item { id } } }`;
+              await github.graphql(mutation);
+              console.log(`PR #${prNumber} statut mis à jour avec succès vers ${projectStatus}`);
+
+            } catch (error) {
+              console.error(`Erreur lors de la mise à jour du statut du PR: ${error.message}`);
+              
+              // Afficher plus de détails sur l'erreur
+              if (error.message.includes('Resource not accessible by integration')) {
+                console.error(`Il semble que le token n'ait pas les autorisations suffisantes. Vérifiez que le token GH_PROJECT_TOKEN a accès aux projets de l'organisation.`);
+              } else if (error.message.includes('Could not resolve to a node')) {
+                console.error(`Impossible de trouver la ressource. Vérifiez que les IDs de projet, de champ et d'option sont corrects.`);
+              }
+              
+              core.setFailed(error.message);
+            }
+
+      - name: Close linked issue when PR is merged
+        if: github.event.action == 'closed' && github.event.pull_request.merged == true
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GH_PROJECT_TOKEN }}
+          script: |
+            const prBody = context.payload.pull_request.body || '';
+            const match = prBody.match(/Closes #(\d+)/);
+            if (match && match[1]) {
+              const issueNumber = match[1];
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                state: 'closed'
+              });
+              console.log(`Closed issue #${issueNumber}`);
+            }
+
+      # Script de diagnostic pour obtenir la structure du projet (exécuté uniquement en mode manuel)
+      - name: Diagnostic du projet (mode manuel)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GH_PROJECT_TOKEN }}
+          script: |
+            const ORG_NAME = context.repo.owner;
+            const PROJECT_NUMBER = 2;  // Projet numéro 2
+
+            try {
+              console.log(`Analyse du projet ${ORG_NAME}/projects/${PROJECT_NUMBER}...`);
+              
+              // Obtenir tous les projets de l'organisation
+              const projectsQuery = `
+                query {
+                  organization(login: "${ORG_NAME}") {
+                    projectsV2(first: 10) {
+                      nodes {
+                        number
+                        title
+                        id
+                        url
+                      }
+                    }
+                  }
+                }
+              `;
+              
+              const projectsData = await github.graphql(projectsQuery);
+              console.log(`Projets disponibles dans l'organisation:`);
+              console.log(JSON.stringify(projectsData.organization.projectsV2.nodes, null, 2));
+              
+              // Obtenir les détails du projet spécifique
+              const projectQuery = `
+                query {
+                  organization(login: "${ORG_NAME}") {
+                    projectV2(number: ${PROJECT_NUMBER}) {
+                      id
+                      title
+                      fields(first: 20) {
+                        nodes {
+                          ... on ProjectV2Field {
+                            id
+                            name
+                            dataType
+                          }
+                          ... on ProjectV2IterationField {
+                            id
+                            name
+                            dataType
+                          }
+                          ... on ProjectV2SingleSelectField {
+                            id
+                            name
+                            dataType
+                            options {
+                              id
+                              name
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              `;
+              
+              const projectData = await github.graphql(projectQuery);
+              const project = projectData.organization.projectV2;
+              
+              console.log(`Projet: ${project.title} (ID: ${project.id})`);
+              console.log(`\nChamps disponibles:`);
+              
+              // Trouver le champ de statut
+              let statusField = null;
+              
+              project.fields.nodes.forEach(field => {
+                console.log(`- ${field.name} (${field.dataType}): ${field.id}`);
+                
+                // Si c'est un champ de sélection unique, liste les options
+                if (field.dataType === 'SINGLE_SELECT' && field.options) {
+                  console.log(`  Options:`);
+                  field.options.forEach(option => {
+                    console.log(`    - ${option.name}: ${option.id}`);
+                  });
+                  
+                  // Vérifier si c'est un champ de statut
+                  if (field.name.toLowerCase().includes('status') || field.name.toLowerCase().includes('état')) {
+                    statusField = field;
+                  }
+                }
+              });
+              
+              // Générer une configuration suggérée
+              if (statusField) {
+                const statusValues = {};
+                statusField.options.forEach(option => {
+                  statusValues[option.name] = option.id;
+                });
+                
+                const config = {
+                  projectNumber: PROJECT_NUMBER,
+                  statusField: statusField.id,
+                  statusValues: statusValues,
+                  statusMapping: {
+                    "To Do": "Todo",
+                    "In Progress": "In Progress",
+                    "Review": "Review",
+                    "Done": "Done"
+                  }
+                };
+                
+                console.log(`\nConfiguration suggérée pour le project-config.json:`);
+                console.log(JSON.stringify(config, null, 2));
+              } else {
+                console.log(`\nAucun champ de statut trouvé dans le projet!`);
+              }
+              
+            } catch (error) {
+              console.error(`Erreur lors de l'analyse du projet: ${error.message}`);
+              core.setFailed(error.message);
+            }
